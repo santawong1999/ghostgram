@@ -5,34 +5,13 @@ jobs:
     runs-on: macos-15
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: |
-        set -e
-        brew install ldid
-        curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/9.0.24102/Telegram-9.0.24102.ipa"
-        ls -lh Telegram.ipa
-        unzip -q Telegram.ipa -d TelegramApp
-        ls TelegramApp/Payload/
-        SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-        clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib
-        ls -lh TGExtraPlus.dylib
-        cd TelegramApp/Payload/Telegram.app
-        cp ${{ github.workspace }}/TGExtraPlus.dylib .
-        cp Telegram Telegram_backup
-        python3 ${{ github.workspace }}/scripts/extract_arm64.py Telegram Telegram_arm64
-        install_name_tool -add_rpath @executable_path Telegram 2>/dev/null || true
-        python3 ${{ github.workspace }}/scripts/inject_dylib.py Telegram_arm64 "@executable_path/TGExtraPlus.dylib"
-        mv Telegram_arm64_patched Telegram
-        chmod +x Telegram
-        ls -lh Telegram
-        rm -rf _CodeSignature CodeResources 2>/dev/null || true
-        python3 ${{ github.workspace }}/scripts/gen_entitlements.py ent.xml
-        ldid -Sent.xml TGExtraPlus.dylib
-        ldid -Sent.xml Telegram
-        cd ${{ github.workspace }}/TelegramApp
-        rm -f Payload/Telegram.app/Telegram_backup
-        zip -qr TGExtraPlus.ipa Payload/
-        cp TGExtraPlus.ipa ${{ github.workspace }}/
+    - run: brew install ldid
+    - run: curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/9.0.24102/Telegram-9.0.24102.ipa" && ls -lh Telegram.ipa
+    - run: unzip -q Telegram.ipa -d TelegramApp && ls TelegramApp/Payload/
+    - run: SDK=$(xcrun --sdk iphoneos --show-sdk-path) && clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib && ls -lh TGExtraPlus.dylib
+    - run: cd TelegramApp/Payload/Telegram.app && cp ${{ github.workspace }}/TGExtraPlus.dylib . && cp Telegram Telegram_backup && python3 ${{ github.workspace }}/scripts/extract_arm64.py Telegram Telegram_arm64 && install_name_tool -add_rpath @executable_path Telegram 2>/dev/null; python3 ${{ github.workspace }}/scripts/inject_dylib.py Telegram_arm64 "@executable_path/TGExtraPlus.dylib" && mv Telegram_arm64_patched Telegram && chmod +x Telegram && ls -lh Telegram
+    - run: cd TelegramApp/Payload/Telegram.app && rm -rf _CodeSignature CodeResources 2>/dev/null; python3 ${{ github.workspace }}/scripts/patch_plist.py Info.plist && python3 ${{ github.workspace }}/scripts/gen_entitlements.py ent.xml && ldid -Sent.xml TGExtraPlus.dylib && ldid -Sent.xml Telegram && echo OK
+    - run: cd TelegramApp && rm -f Payload/Telegram.app/Telegram_backup && zip -qr TGExtraPlus.ipa Payload/ && cp TGExtraPlus.ipa ${{ github.workspace }}/
     - uses: actions/upload-artifact@v4
       with:
         name: TGExtraPlus
