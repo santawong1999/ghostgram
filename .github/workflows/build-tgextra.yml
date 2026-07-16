@@ -60,16 +60,7 @@ jobs:
         run: |
           cd TelegramApp/Payload/Telegram.app
           rm -rf _CodeSignature CodeResources 2>/dev/null || true
-          cat > ent.xml <<'ENTXML'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-          <key>get-task-allow</key><true/>
-          <key>aps-environment</key><string>development</string>
-          <key>com.apple.security.application-groups</key><array><string>group.telegram</string></array>
-          <key>keychain-access-groups</key><array><string>$(AppIdentifierPrefix)org.telegram.Telegram</string></array>
-          </dict></plist>
-ENTXML
+          python3 -c "import plistlib; plistlib.dump({'get-task-allow':True,'aps-environment':'development','com.apple.security.application-groups':['group.telegram'],'keychain-access-groups':['\$(AppIdentifierPrefix)org.telegram.Telegram']}, open('ent.xml','wb'))"
 
       - name: Resign
         run: |
