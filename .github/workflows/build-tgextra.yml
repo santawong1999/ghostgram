@@ -19,8 +19,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
       - name: Install ldid
-        run: brew install ldid && which ldid
+        run: brew install ldid
+
       - name: Download decrypted Telegram IPA
         run: |
           VER="${{ github.event.inputs.telegram_version }}"
@@ -28,69 +30,61 @@ jobs:
           curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram_${VER}.ipa" || \
           curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/latest/download/Telegram.ipa"
           ls -lh Telegram.ipa
+
       - name: Extract IPA
         run: |
           unzip -q Telegram.ipa -d TelegramApp
           ls TelegramApp/Payload/
-      - name: Compile dylib
+
+      - name: Compile TGExtra plus dylib
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib
           ls -lh TGExtraPlus.dylib
+
       - name: Inject dylib
         run: |
           cd TelegramApp/Payload/Telegram.app
           cp "${{ github.workspace }}/TGExtraPlus.dylib" .
           cp Telegram Telegram_backup
-          python3 -c "import struct
-with open('Telegram','rb') as f: d=bytearray(f.read())
-if d[:4]==b'\xcf\xfa\xed\xfe':
- n=struct.unpack('<I',d[4:8])[0]; off=8
- for i in range(n):
-  t=struct.unpack('<I',d[off:off+4])[0]; a=struct.unpack('<I',d[off+8:off+12])[0]; s=struct.unpack('<I',d[off+12:off+16])[0]
-  if t==12:
-   with open('Telegram_arm64','wb') as f: f.write(bytes(d[a:a+s]))
-   break
-  off+=20
-else:
- import os; os.system('cp Telegram Telegram_arm64')
-print('arm64 extracted')"
+          python3 "${{ github.workspace }}/scripts/extract_arm64.py" Telegram Telegram_arm64
           install_name_tool -add_rpath @executable_path Telegram 2>/dev/null || true
-          python3 -c "import struct
-with open('Telegram_arm64','rb') as f: d=bytearray(f.read())
-p=b'@executable_path/TGExtraPlus.dylib\x00'
-while len(p)%4: p+=b'\x00'
-cs=24+len(p)
-c=struct.pack('<II',0x0C,cs)+struct.pack('<IIII',24,0,0,0)+p
-n=struct.unpack('<I',d[4:8])[0]; sc=struct.unpack('<I',d[8:12])[0]
-d[8:12]=struct.pack('<I',sc+cs); d[4:8]=struct.pack('<I',n+1)
-io=8+sc; d[io:io]=c
-with open('Telegram_patched','wb') as f: f.write(bytes(d))
-import os; os.chmod('Telegram_patched',0o755)
-print('dylib injected OK')"
-          mv Telegram_patched Telegram
+          python3 "${{ github.workspace }}/scripts/inject_dylib.py" Telegram_arm64 "@executable_path/TGExtraPlus.dylib"
+          if [ -f Telegram_arm64_patched ]; then
+            mv Telegram_arm64_patched Telegram
+          fi
           chmod +x Telegram
           ls -lh Telegram
-      - name: Resign
+
+      - name: Create entitlements
         run: |
           cd TelegramApp/Payload/Telegram.app
           rm -rf _CodeSignature CodeResources 2>/dev/null || true
-          cat > ent.xml '<?xml version="1.0" encoding="UTF-8"?>
+          cat > ent.xml <<'ENTXML'
+          <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
           <key>get-task-allow</key><true/>
           <key>aps-environment</key><string>development</string>
           <key>com.apple.security.application-groups</key><array><string>group.telegram</string></array>
           <key>keychain-access-groups</key><array><string>$(AppIdentifierPrefix)org.telegram.Telegram</string></array>
-          </dict></plist>'
-          ldid -Sent.xml TGExtraPlus.dylib && ldid -Sent.xml Telegram
-          echo "Resign OK"
+          </dict></plist>
+ENTXML
+
+      - name: Resign
+        run: |
+          cd TelegramApp/Payload/Telegram.app
+          ldid -Sent.xml TGExtraPlus.dylib
+          ldid -Sent.xml Telegram
+          echo "Resign complete"
+
       - name: Repackage IPA
         run: |
           cd TelegramApp
           rm -f Payload/Telegram.app/Telegram_backup
           zip -qr TGExtraPlus.ipa Payload/
           cp TGExtraPlus.ipa "${{ github.workspace }}/"
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
