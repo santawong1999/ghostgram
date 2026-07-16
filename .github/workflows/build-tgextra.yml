@@ -1,84 +1,19 @@
-name: Build Telegram IPA with TGExtra+
-on:
-  workflow_dispatch:
-    inputs:
-      build_number:
-        description: 'Build number'
-        required: true
-        default: '100001'
-      telegram_version:
-        description: 'Telegram version tag'
-        required: false
-        default: '11.8.2'
-permissions:
-  contents: read
+name: Build TGExtra+
+on: workflow_dispatch
 jobs:
   build:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install ldid
-        run: brew install ldid
-
-      - name: Download decrypted Telegram IPA
-        run: |
-          VER="${{ github.event.inputs.telegram_version }}"
-          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram.ipa" || \
-          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram_${VER}.ipa" || \
-          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/latest/download/Telegram.ipa"
-          ls -lh Telegram.ipa
-
-      - name: Extract IPA
-        run: |
-          unzip -q Telegram.ipa -d TelegramApp
-          ls TelegramApp/Payload/
-
-      - name: Compile TGExtra plus dylib
-        run: |
-          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
-          clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib
-          ls -lh TGExtraPlus.dylib
-
-      - name: Inject dylib
-        run: |
-          cd TelegramApp/Payload/Telegram.app
-          cp "${{ github.workspace }}/TGExtraPlus.dylib" .
-          cp Telegram Telegram_backup
-          python3 "${{ github.workspace }}/scripts/extract_arm64.py" Telegram Telegram_arm64
-          install_name_tool -add_rpath @executable_path Telegram 2>/dev/null || true
-          python3 "${{ github.workspace }}/scripts/inject_dylib.py" Telegram_arm64 "@executable_path/TGExtraPlus.dylib"
-          if [ -f Telegram_arm64_patched ]; then
-            mv Telegram_arm64_patched Telegram
-          fi
-          chmod +x Telegram
-          ls -lh Telegram
-
-      - name: Create entitlements
-        run: |
-          cd TelegramApp/Payload/Telegram.app
-          rm -rf _CodeSignature CodeResources 2>/dev/null || true
-          python3 -c "import plistlib; plistlib.dump({'get-task-allow':True,'aps-environment':'development','com.apple.security.application-groups':['group.telegram'],'keychain-access-groups':['\$(AppIdentifierPrefix)org.telegram.Telegram']}, open('ent.xml','wb'))"
-
-      - name: Resign
-        run: |
-          cd TelegramApp/Payload/Telegram.app
-          ldid -Sent.xml TGExtraPlus.dylib
-          ldid -Sent.xml Telegram
-          echo "Resign complete"
-
-      - name: Repackage IPA
-        run: |
-          cd TelegramApp
-          rm -f Payload/Telegram.app/Telegram_backup
-          zip -qr TGExtraPlus.ipa Payload/
-          cp TGExtraPlus.ipa "${{ github.workspace }}/"
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: TGExtraPlus-${{ github.event.inputs.build_number }}
-          path: TGExtraPlus.ipa
-          retention-days: 7
+    - uses: actions/checkout@v4
+    - run: brew install ldid
+    - run: curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/latest/download/Telegram.ipa" && ls -lh Telegram.ipa
+    - run: unzip -q Telegram.ipa -d TelegramApp && ls TelegramApp/Payload/
+    - run: SDK=$(xcrun --sdk iphoneos --show-sdk-path) && clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib && ls -lh TGExtraPlus.dylib
+    - run: cd TelegramApp/Payload/Telegram.app && cp ${{ github.workspace }}/TGExtraPlus.dylib . && cp Telegram Telegram_backup && python3 ${{ github.workspace }}/scripts/extract_arm64.py Telegram Telegram_arm64 && install_name_tool -add_rpath @executable_path Telegram 2>/dev/null; python3 ${{ github.workspace }}/scripts/inject_dylib.py Telegram_arm64 "@executable_path/TGExtraPlus.dylib" && mv Telegram_arm64_patched Telegram && chmod +x Telegram && ls -lh Telegram
+    - run: cd TelegramApp/Payload/Telegram.app && rm -rf _CodeSignature CodeResources 2>/dev/null; python3 ${{ github.workspace }}/scripts/gen_entitlements.py ent.xml && ldid -Sent.xml TGExtraPlus.dylib && ldid -Sent.xml Telegram && echo OK
+    - run: cd TelegramApp && rm -f Payload/Telegram.app/Telegram_backup && zip -qr TGExtraPlus.ipa Payload/ && cp TGExtraPlus.ipa ${{ github.workspace }}/
+    - uses: actions/upload-artifact@v4
+      with:
+        name: TGExtraPlus
+        path: TGExtraPlus.ipa
+        retention-days: 7
