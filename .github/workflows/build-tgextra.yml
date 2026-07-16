@@ -1,5 +1,4 @@
 name: Build Telegram IPA with TGExtra+
-
 on:
   workflow_dispatch:
     inputs:
@@ -11,214 +10,87 @@ on:
         description: 'Telegram version tag'
         required: false
         default: '11.8.2'
-
 permissions:
   contents: read
-
 jobs:
   build:
     runs-on: macos-15
-
     steps:
-      - name: Checkout TGExtra+ source
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-
-      - name: Install dependencies
-        run: |
-          brew install ldid 2>/dev/null || true
-
+      - name: Install ldid
+        run: brew install ldid && which ldid
       - name: Download decrypted Telegram IPA
         run: |
-          echo "Downloading Telegram IPA..."
-          # Try multiple download URL patterns
-          curl -sL -o Telegram.ipa \
-            "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${{ github.event.inputs.telegram_version }}/Telegram.ipa" || \
-            curl -sL -o Telegram.ipa \
-            "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${{ github.event.inputs.telegram_version }}/Telegram_${{ github.event.inputs.telegram_version }}.ipa" || \
-            curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/latest/download/Telegram.ipa"
+          VER="${{ github.event.inputs.telegram_version }}"
+          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram.ipa" || \
+          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram_${VER}.ipa" || \
+          curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/latest/download/Telegram.ipa"
           ls -lh Telegram.ipa
-
       - name: Extract IPA
         run: |
           unzip -q Telegram.ipa -d TelegramApp
-          echo "Extracted:"
-          ls -la TelegramApp/Payload/
-
-      - name: Compile TGExtra+ dylib
+          ls TelegramApp/Payload/
+      - name: Compile dylib
         run: |
-          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
-          echo "SDK: $SDK_PATH"
-
-          # Compile as arm64 dylib for iOS
-          clang -arch arm64 \
-            -isysroot "$SDK_PATH" \
-            -miphoneos-version-min=14.0 \
-            -fobjc-arc \
-            -framework Foundation \
-            -framework UIKit \
-            -framework CoreGraphics \
-            -dynamiclib \
-            -O2 \
-            -o TGExtraPlus.dylib \
-            Sources/tgapi/TGExtraPlus.m \
-            -install_name @rpath/TGExtraPlus.dylib
-
-          echo "Compiled:"
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=14.0 -fobjc-arc -framework Foundation -framework UIKit -framework CoreGraphics -dynamiclib -O2 -o TGExtraPlus.dylib Sources/tgapi/TGExtraPlus.m -install_name @rpath/TGExtraPlus.dylib
           ls -lh TGExtraPlus.dylib
-          file TGExtraPlus.dylib
-
-      - name: Inject dylib into Telegram
+      - name: Inject dylib
         run: |
           cd TelegramApp/Payload/Telegram.app
-
-          # Copy dylib
           cp "${{ github.workspace }}/TGExtraPlus.dylib" .
-
-          # Backup original binary
           cp Telegram Telegram_backup
-
-          # Inject dylib load command using python
-          python3 << 'PYEOF'
-import struct, os
-
-# Read the arm64 slice from the FAT binary
-with open('Telegram', 'rb') as f:
-    data = bytearray(f.read())
-
-is_fat = data[:4] == b'\xcf\xfa\xed\xfe'
-macho_offset = 0
-
-if is_fat:
-    arch_count = struct.unpack_from('<I', data, 4)[0]
-    off = 8
-    for i in range(arch_count):
-        cpu = struct.unpack_from('<I', data, off)[0]
-        arch_off = struct.unpack_from('<I', data, off + 8)[0]
-        arch_size = struct.unpack_from('<I', data, off + 12)[0]
-        if cpu == 12:  # ARM64
-            macho_offset = arch_off
-            # Extract just the arm64 slice
-            with open('Telegram_arm64', 'wb') as f:
-                f.write(bytes(data[arch_off:arch_off + arch_size]))
-            break
-        off += 20
-    dylib_path = b'@executable_path/TGExtraPlus.dylib\0'
-    print(f'ARM64 offset: {macho_offset}')
-    print('Extracted arm64 slice')
+          python3 -c "import struct
+with open('Telegram','rb') as f: d=bytearray(f.read())
+if d[:4]==b'\xcf\xfa\xed\xfe':
+ n=struct.unpack('<I',d[4:8])[0]; off=8
+ for i in range(n):
+  t=struct.unpack('<I',d[off:off+4])[0]; a=struct.unpack('<I',d[off+8:off+12])[0]; s=struct.unpack('<I',d[off+12:off+16])[0]
+  if t==12:
+   with open('Telegram_arm64','wb') as f: f.write(bytes(d[a:a+s]))
+   break
+  off+=20
 else:
-    print('Not a FAT binary, using as-is')
-    os.system('cp Telegram Telegram_arm64')
-
-# Use /usr/bin/python3 for the actual injection via insert_dylib-style
-# Instead, use install_name_tool for rpath and atos for verification
-PYEOF
-
-          # Add rpath
+ import os; os.system('cp Telegram Telegram_arm64')
+print('arm64 extracted')"
           install_name_tool -add_rpath @executable_path Telegram 2>/dev/null || true
-
-          # Use insert_dylib approach with python
-          python3 -c "
-import struct, os
-
-with open('Telegram_arm64', 'rb') as f:
-    data = bytearray(f.read())
-
-# LC_LOAD_DYLIB command
-dylib_path = b'@executable_path/TGExtraPlus.dylib'
-name_bytes = dylib_path + b'\x00'
-# Pad to align
-while len(name_bytes) % 4 != 0:
-    name_bytes += b'\x00'
-
-cmd_size = 24 + len(name_bytes)
-cmd = struct.pack('<II', 0x0C, cmd_size)  # LC_LOAD_DYLIB
-# dylib_info: offset_of_name, timestamp(0), current_version(0), compatibility_version(0)
-cmd += struct.pack('<IIII', 24, 0, 0, 0)
-cmd += name_bytes
-
-# Find the last load command position
-mh_header = data[:8]
-ncmds = struct.unpack_from('<I', data, 4)[0]
-sizeofcmds = struct.unpack_from('<I', data, 4+4)[0]
-print(f'ncmds: {ncmds}, sizeofcmds: {sizeofcmds}')
-
-# Insert after all existing load commands
-insert_offset = 8 + sizeofcmds
-data[4+4:4+4+4] = struct.pack('<I', sizeofcmds + cmd_size)
-data[4:4+4] = struct.pack('<I', ncmds + 1)
-
-# Insert the new load command
-data[insert_offset:insert_offset] = cmd
-
-with open('Telegram_patched', 'wb') as f:
-    f.write(bytes(data))
-
-os.chmod('Telegram_patched', 0o755)
-print('Injected dylib successfully')
-" 2>&1 || echo "Python injection failed, trying alternative..."
-
-          # If python injection failed, try simple install_name_tool approach
-          if [ ! -f Telegram_patched ]; then
-            install_name_tool -change /dev/null @executable_path/TGExtraPlus.dylib Telegram 2>/dev/null || true
-          fi
-
-          # Use patched binary
-          if [ -f Telegram_patched ]; then
-            mv Telegram_patched Telegram
-          fi
-
+          python3 -c "import struct
+with open('Telegram_arm64','rb') as f: d=bytearray(f.read())
+p=b'@executable_path/TGExtraPlus.dylib\x00'
+while len(p)%4: p+=b'\x00'
+cs=24+len(p)
+c=struct.pack('<II',0x0C,cs)+struct.pack('<IIII',24,0,0,0)+p
+n=struct.unpack('<I',d[4:8])[0]; sc=struct.unpack('<I',d[8:12])[0]
+d[8:12]=struct.pack('<I',sc+cs); d[4:8]=struct.pack('<I',n+1)
+io=8+sc; d[io:io]=c
+with open('Telegram_patched','wb') as f: f.write(bytes(d))
+import os; os.chmod('Telegram_patched',0o755)
+print('dylib injected OK')"
+          mv Telegram_patched Telegram
           chmod +x Telegram
           ls -lh Telegram
-
-      - name: Resign the app
+      - name: Resign
         run: |
           cd TelegramApp/Payload/Telegram.app
-
-          # Remove old signature
           rm -rf _CodeSignature CodeResources 2>/dev/null || true
-
-          # Create entitlements
-          cat > entitlements.xml << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
+          cat > ent.xml '<?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>get-task-allow</key>
-              <true/>
-              <key>aps-environment</key>
-              <string>development</string>
-              <key>com.apple.security.application-groups</key>
-              <array><string>group.telegram</string></array>
-              <key>keychain-access-groups</key>
-              <array><string>$(AppIdentifierPrefix)org.telegram.Telegram</string></array>
-          </dict>
-          </plist>
-          EOF
-
-          # Resign with ldid
-          ldid -Sentitlements.xml TGExtraPlus.dylib
-          ldid -Sentitlements.xml Telegram
-
-          # Resign app extensions
-          find PlugIns Watch Frameworks -name "*.appex" -o -name "*.framework" -o -name "*.app" 2>/dev/null | while read f; do
-            binary=$(basename "$f" | sed 's/\.[^.]*$//')
-            if [ -f "$f/$binary" ]; then
-              ldid -S "$f/$binary" 2>/dev/null || true
-            fi
-          done
-
-          echo "Resigning complete"
-
+          <plist version="1.0"><dict>
+          <key>get-task-allow</key><true/>
+          <key>aps-environment</key><string>development</string>
+          <key>com.apple.security.application-groups</key><array><string>group.telegram</string></array>
+          <key>keychain-access-groups</key><array><string>$(AppIdentifierPrefix)org.telegram.Telegram</string></array>
+          </dict></plist>'
+          ldid -Sent.xml TGExtraPlus.dylib && ldid -Sent.xml Telegram
+          echo "Resign OK"
       - name: Repackage IPA
         run: |
           cd TelegramApp
           rm -f Payload/Telegram.app/Telegram_backup
           zip -qr TGExtraPlus.ipa Payload/
           cp TGExtraPlus.ipa "${{ github.workspace }}/"
-          ls -lh "${{ github.workspace }}/TGExtraPlus.ipa"
-
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
