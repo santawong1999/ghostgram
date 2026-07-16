@@ -9,9 +9,7 @@ jobs:
       run: |
         set -e
         brew install ldid
-        VER=$(curl -sL "https://api.github.com/repos/MarshalX/decrypted-telegram-ios/releases/latest" | python3 -c "import sys,json;print(json.load(sys.stdin)['tag_name'])")
-        echo "Latest Telegram version: $VER"
-        curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/${VER}/Telegram-${VER}.ipa"
+        curl -sL -o Telegram.ipa "https://github.com/MarshalX/decrypted-telegram-ios/releases/download/9.0.24102/Telegram-9.0.24102.ipa"
         ls -lh Telegram.ipa
         unzip -q Telegram.ipa -d TelegramApp
         ls TelegramApp/Payload/
